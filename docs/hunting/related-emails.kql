@@ -1,0 +1,21 @@
+// Analyst follow-up for an escalated phish: who else received mail from the same
+// sender or sender domain, and did anyone click?
+// Run in Microsoft Defender Advanced Hunting (or Sentinel with the Defender XDR connector).
+// Replace the sender before running.
+let reportedSender = "it-support@c0ntoso.com";
+let senderDomain = tostring(split(reportedSender, "@")[1]);
+let lookback = 7d;
+EmailEvents
+| where Timestamp > ago(lookback)
+| where SenderFromAddress =~ reportedSender or SenderFromDomain =~ senderDomain
+| project Timestamp, NetworkMessageId, RecipientEmailAddress, Subject, SenderFromAddress,
+          DeliveryAction, DeliveryLocation, ThreatTypes
+| join kind=leftouter (
+    UrlClickEvents
+    | where Timestamp > ago(lookback)
+    | summarize Clicks = count(), ClickedUrls = make_set(Url, 10), AnyClickAllowed = max(toint(ActionType == "ClickAllowed"))
+        by NetworkMessageId, AccountUpn
+  ) on $left.NetworkMessageId == $right.NetworkMessageId, $left.RecipientEmailAddress == $right.AccountUpn
+| extend Clicks = coalesce(Clicks, 0)
+| project-away NetworkMessageId1, AccountUpn
+| order by Clicks desc, Timestamp desc
