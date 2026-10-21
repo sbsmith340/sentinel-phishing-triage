@@ -1,0 +1,252 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "title": "Phishing-Triage-Playbook",
+    "description": "Triggered on Microsoft Sentinel incident creation. Sends the incident's mail/URL/file entities to a scoring Function, comments the verdict and signals on the incident, then escalates, tags for review, or (optionally) closes benign reports.",
+    "author": "Shawn Smith (github.com/sbsmith340)"
+  },
+  "parameters": {
+    "PlaybookName": {
+      "type": "string",
+      "defaultValue": "Phishing-Triage-Playbook"
+    },
+    "ScoringFunctionUrl": {
+      "type": "securestring",
+      "metadata": { "description": "Full URL of the /api/score Function including ?code=<function key>." }
+    },
+    "ProtectedDomains": {
+      "type": "string",
+      "defaultValue": "contoso.com",
+      "metadata": { "description": "Comma-separated org/brand domains used for lookalike and spoof checks." }
+    },
+    "AutoCloseBenign": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": { "description": "If true, incidents scored benign are closed automatically. Leave false until tuned." }
+    }
+  },
+  "variables": {
+    "SentinelConnectionName": "[concat('azuresentinel-', parameters('PlaybookName'))]",
+    "SentinelApiId": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('SentinelConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "V1",
+      "properties": {
+        "displayName": "[variables('SentinelConnectionName')]",
+        "customParameterValues": {},
+        "parameterValueType": "Alternative",
+        "api": { "id": "[variables('SentinelApiId')]" }
+      }
+    },
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2019-05-01",
+      "name": "[parameters('PlaybookName')]",
+      "location": "[resourceGroup().location]",
+      "identity": { "type": "SystemAssigned" },
+      "tags": { "hidden-SentinelTemplateName": "Phishing-Triage-Playbook" },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/connections', variables('SentinelConnectionName'))]"
+      ],
+      "properties": {
+        "state": "Enabled",
+        "parameters": {
+          "$connections": {
+            "value": {
+              "azuresentinel": {
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('SentinelConnectionName'))]",
+                "connectionName": "[variables('SentinelConnectionName')]",
+                "id": "[variables('SentinelApiId')]",
+                "connectionProperties": { "authentication": { "type": "ManagedServiceIdentity" } }
+              }
+            }
+          },
+          "ScoringFunctionUrl": { "value": "[parameters('ScoringFunctionUrl')]" },
+          "ProtectedDomains": { "value": "[parameters('ProtectedDomains')]" },
+          "AutoCloseBenign": { "value": "[parameters('AutoCloseBenign')]" }
+        },
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "$connections": { "type": "Object", "defaultValue": {} },
+            "ScoringFunctionUrl": { "type": "SecureString", "defaultValue": "" },
+            "ProtectedDomains": { "type": "String", "defaultValue": "contoso.com" },
+            "AutoCloseBenign": { "type": "Bool", "defaultValue": false }
+          },
+          "triggers": {
+            "Microsoft_Sentinel_incident": {
+              "type": "ApiConnectionWebhook",
+              "inputs": {
+                "host": { "connection": { "name": "@parameters('$connections')['azuresentinel']['connectionId']" } },
+                "body": { "callback_url": "@{listCallbackUrl()}" },
+                "path": "/incident-creation"
+              }
+            }
+          },
+          "actions": {
+            "Score_email": {
+              "type": "Http",
+              "runAfter": {},
+              "inputs": {
+                "method": "POST",
+                "uri": "@parameters('ScoringFunctionUrl')",
+                "headers": { "Content-Type": "application/json" },
+                "body": {
+                  "entities": "@triggerBody()?['object']?['properties']?['relatedEntities']",
+                  "protectedDomains": "@split(parameters('ProtectedDomains'), ',')"
+                },
+                "retryPolicy": { "type": "fixed", "count": 2, "interval": "PT10S" }
+              },
+              "runtimeConfiguration": { "secureData": { "properties": [ "inputs" ] } }
+            },
+            "Parse_verdict": {
+              "type": "ParseJson",
+              "runAfter": { "Score_email": [ "Succeeded" ] },
+              "inputs": {
+                "content": "@body('Score_email')",
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "score": { "type": [ "integer", "null" ] },
+                    "verdict": { "type": "string" },
+                    "signals": { "type": "array", "items": { "type": "string" } },
+                    "sender": { "type": "string" },
+                    "subject": { "type": "string" }
+                  }
+                }
+              }
+            },
+            "Comment_verdict": {
+              "type": "ApiConnection",
+              "runAfter": { "Parse_verdict": [ "Succeeded" ] },
+              "inputs": {
+                "host": { "connection": { "name": "@parameters('$connections')['azuresentinel']['connectionId']" } },
+                "method": "post",
+                "path": "/Incidents/Comment",
+                "body": {
+                  "incidentArmId": "@triggerBody()?['object']?['id']",
+                  "message": "<p><b>Automated phishing triage</b></p><p>Verdict: <b>@{body('Parse_verdict')?['verdict']}</b> &nbsp;|&nbsp; Score: @{body('Parse_verdict')?['score']}/100</p><p>Sender: @{body('Parse_verdict')?['sender']}<br>Subject: @{body('Parse_verdict')?['subject']}</p><p>Signals: @{join(body('Parse_verdict')?['signals'], ', ')}</p>"
+                }
+              }
+            },
+            "Route_by_verdict": {
+              "type": "Switch",
+              "runAfter": { "Comment_verdict": [ "Succeeded" ] },
+              "expression": "@body('Parse_verdict')?['verdict']",
+              "cases": {
+                "Malicious": {
+                  "case": "malicious",
+                  "actions": {
+                    "Escalate_incident": {
+                      "type": "ApiConnection",
+                      "inputs": {
+                        "host": { "connection": { "name": "@parameters('$connections')['azuresentinel']['connectionId']" } },
+                        "method": "put",
+                        "path": "/Incidents",
+                        "body": {
+                          "incidentArmId": "@triggerBody()?['object']?['id']",
+                          "severity": "High",
+                          "status": "Active",
+                          "tagsToAdd": { "TagsToAdd": [ { "Tag": "phish-triage:malicious" } ] }
+                        }
+                      }
+                    }
+                  }
+                },
+                "Suspicious": {
+                  "case": "suspicious",
+                  "actions": {
+                    "Tag_for_review": {
+                      "type": "ApiConnection",
+                      "inputs": {
+                        "host": { "connection": { "name": "@parameters('$connections')['azuresentinel']['connectionId']" } },
+                        "method": "put",
+                        "path": "/Incidents",
+                        "body": {
+                          "incidentArmId": "@triggerBody()?['object']?['id']",
+                          "tagsToAdd": { "TagsToAdd": [ { "Tag": "phish-triage:review" } ] }
+                        }
+                      }
+                    }
+                  }
+                },
+                "Benign": {
+                  "case": "benign",
+                  "actions": {
+                    "If_auto_close_enabled": {
+                      "type": "If",
+                      "expression": { "and": [ { "equals": [ "@parameters('AutoCloseBenign')", true ] } ] },
+                      "actions": {
+                        "Close_as_benign": {
+                          "type": "ApiConnection",
+                          "inputs": {
+                            "host": { "connection": { "name": "@parameters('$connections')['azuresentinel']['connectionId']" } },
+                            "method": "put",
+                            "path": "/Incidents",
+                            "body": {
+                              "incidentArmId": "@triggerBody()?['object']?['id']",
+                              "status": "Closed",
+                              "classification": {
+                                "ClassificationAndReason": "BenignPositive - SuspiciousButExpected",
+                                "ClassificationReasonText": "Auto-closed by phishing triage playbook: score @{body('Parse_verdict')?['score']}/100, no high-risk signals."
+                              },
+                              "tagsToAdd": { "TagsToAdd": [ { "Tag": "phish-triage:benign-autoclosed" } ] }
+                            }
+                          }
+                        }
+                      },
+                      "else": {
+                        "actions": {
+                          "Tag_benign": {
+                            "type": "ApiConnection",
+                            "inputs": {
+                              "host": { "connection": { "name": "@parameters('$connections')['azuresentinel']['connectionId']" } },
+                              "method": "put",
+                              "path": "/Incidents",
+                              "body": {
+                                "incidentArmId": "@triggerBody()?['object']?['id']",
+                                "tagsToAdd": { "TagsToAdd": [ { "Tag": "phish-triage:likely-benign" } ] }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "default": { "actions": {} }
+            },
+            "On_scoring_failure_tag_incident": {
+              "type": "ApiConnection",
+              "runAfter": { "Score_email": [ "Failed", "TimedOut" ] },
+              "inputs": {
+                "host": { "connection": { "name": "@parameters('$connections')['azuresentinel']['connectionId']" } },
+                "method": "put",
+                "path": "/Incidents",
+                "body": {
+                  "incidentArmId": "@triggerBody()?['object']?['id']",
+                  "tagsToAdd": { "TagsToAdd": [ { "Tag": "phish-triage:scoring-failed" } ] }
+                }
+              }
+            }
+          },
+          "outputs": {}
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "playbookPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')), '2019-05-01', 'Full').identity.principalId]"
+    }
+  }
+}
