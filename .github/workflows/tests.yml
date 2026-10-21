@@ -1,0 +1,22 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pytest
+      - run: pytest -q tests
+      - name: Evaluate on synthetic set
+        run: |
+          python sample/generate_samples.py --count 200 --seed 7
+          python src/evaluate.py sample/reported_emails.jsonl
+      - name: Validate ARM template is well-formed JSON
+        run: python -m json.tool src/playbook/azuredeploy.json > /dev/null
