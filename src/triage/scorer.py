@@ -97,9 +97,32 @@ def _domain(address_or_url: str) -> str:
     return host
 
 
+# Common multi-label public suffixes. Not the full Public Suffix List; covers the
+# country-code second-level domains that matter most for lookalike and mismatch checks.
+_MULTIPART_SUFFIXES = frozenset({
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "ltd.uk", "plc.uk", "me.uk", "net.uk",
+    "com.au", "net.au", "org.au", "edu.au", "gov.au",
+    "co.nz", "org.nz", "net.nz", "govt.nz",
+    "co.jp", "or.jp", "ne.jp", "ac.jp", "go.jp",
+    "co.in", "net.in", "org.in", "gov.in", "ac.in",
+    "com.br", "net.br", "org.br", "gov.br",
+    "com.mx", "org.mx", "gob.mx",
+    "co.za", "org.za", "gov.za",
+    "com.cn", "net.cn", "org.cn", "gov.cn",
+    "com.sg", "edu.sg", "gov.sg",
+    "com.hk", "org.hk", "co.kr", "or.kr", "com.tr", "com.ar", "co.il", "co.id",
+})
+
+
 def _registrable(domain: str) -> str:
-    """Naive eTLD+1 (good enough for a lab; swap for `tldextract` in prod)."""
+    """eTLD+1 using a built-in list of common multi-part suffixes.
+
+    Falls back to the last two labels. For full coverage swap in `tldextract`
+    (kept out so the scoring engine stays dependency-free).
+    """
     parts = domain.split(".")
+    if len(parts) >= 3 and ".".join(parts[-2:]) in _MULTIPART_SUFFIXES:
+        return ".".join(parts[-3:])
     return ".".join(parts[-2:]) if len(parts) >= 2 else domain
 
 

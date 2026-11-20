@@ -78,3 +78,22 @@ def test_sentinel_entity_mapping():
 
 def test_no_mail_entity_returns_none():
     assert email_from_sentinel_entities([{"kind": "Ip", "properties": {"address": "203.0.113.9"}}]) is None
+
+
+def test_registrable_handles_multipart_public_suffix():
+    from triage.scorer import _registrable
+    assert _registrable("mail.contoso.co.uk") == "contoso.co.uk"
+    assert _registrable("a.b.example.com.au") == "example.com.au"
+    assert _registrable("login.contoso.com") == "contoso.com"
+    assert _registrable("localhost") == "localhost"
+
+
+def test_reply_to_mismatch_between_two_co_uk_domains():
+    # Both domains end in co.uk but belong to different organisations.
+    e = Email("billing@vendor-a.co.uk", reply_to="billing@vendor-b.co.uk")
+    assert "reply_to_mismatch" in score_email(e, PROTECTED).signals
+
+
+def test_reply_to_same_org_subdomain_co_uk_is_not_mismatch():
+    e = Email("billing@mail.vendor-a.co.uk", reply_to="support@vendor-a.co.uk")
+    assert "reply_to_mismatch" not in score_email(e, PROTECTED).signals
