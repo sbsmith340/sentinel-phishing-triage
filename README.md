@@ -57,7 +57,7 @@ These numbers are a **sanity check, not a real-world accuracy claim**. The test 
 git clone https://github.com/sbsmith340/sentinel-phishing-triage.git
 cd sentinel-phishing-triage
 pip install pytest
-pytest -q tests                                  # 10 tests
+pytest -q tests                                  # 13 tests
 python sample/generate_samples.py --count 200 --seed 7
 python src/evaluate.py sample/reported_emails.jsonl
 ```
@@ -127,7 +127,7 @@ az role assignment create --assignee-object-id $PID --assignee-principal-type Se
 
 ## Limitations & what's next
 - **Expand shortened URLs and check them against threat intel** (VirusTotal/URLScan) before scoring, and feed the results into `known_bad_urls`. This closes the one miss above.
-- Replace the naive domain parsing with `tldextract` for correct eTLD+1 handling (e.g. `.co.uk`).
+- Domain parsing now handles common multi-part suffixes (`.co.uk`, `.com.au`, and similar) with a built-in list. For complete coverage, swap in `tldextract` (full Public Suffix List).
 - Pull email body text with the Defender API so the content signals see more than the subject.
 - Add remediation for `malicious`: soft-delete the message across mailboxes with the Defender API, and block the sender.
 - Tune the weights from real analyst verdicts, and track the false-negative rate before enabling auto-close.
