@@ -72,3 +72,24 @@ def test_http_resolver_follows_redirects_with_limit_and_blocks_unsafe_hops():
     internal = {"https://bit.ly/a": "http://169.254.169.254/latest"}
     r3 = make_http_resolver(head=lambda u: internal.get(u), resolve=lambda h: ["93.184.216.34"])
     assert r3("https://bit.ly/a") == "https://bit.ly/a"  # refuses to follow into private space
+
+
+def test_known_bad_original_url_still_matches_after_expansion():
+    # Lab QA finding: expansion must add evidence, never remove it.
+    e = Email("ar@vendor.example", links=[Link("https://bit.ly/abc", "",
+                                              resolved_url="http://clean.example.net/ok")])
+    r = score_email(e, PROTECTED, known_bad_urls={"https://bit.ly/abc"})
+    assert "known_bad_url" in r.signals and r.verdict == "malicious"
+
+
+def test_original_link_lookalike_evidence_survives_expansion():
+    e = Email("ar@vendor.example", links=[Link("http://c0ntoso.com/login", "",
+                                              resolved_url="http://clean.example.net/ok")])
+    assert "lookalike_domain" in score_email(e, PROTECTED).signals
+
+
+def test_expansion_never_lowers_the_score():
+    base = Email("ar@vendor.example", links=[Link("https://bit.ly/abc", "https://contoso.com")])
+    expanded = Email("ar@vendor.example", links=[Link("https://bit.ly/abc", "https://contoso.com",
+                                                      resolved_url="http://clean.example.net/ok")])
+    assert score_email(expanded, PROTECTED).score >= score_email(base, PROTECTED).score
