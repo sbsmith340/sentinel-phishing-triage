@@ -46,7 +46,7 @@ I ran the scorer against 200 synthetic, labeled reports (78 phish, 122 benign) g
 
 - **62% of the queue** would be cleared as likely benign without an analyst opening it.
 - **0 benign emails** escalated as malicious.
-- **1 phish missed**: an "invoice overdue" email whose only link was a URL shortener and whose authentication passed. That's a real gap. Shortened links need to be expanded and checked against threat intel before scoring, which the `known_bad_urls` hook is designed for (see *What's next*).
+- **1 phish missed**: an "invoice overdue" email whose only link was a URL shortener and whose authentication passed. That's a real gap. Shortened links need to be expanded before scoring. That expansion is now built (see *Short-link expansion*), but the numbers above were measured without it, because the generated data has no redirect targets to follow.
 
 These numbers are a **sanity check, not a real-world accuracy claim**. The test set was built from the same kinds of patterns the signals look for. Real reported mail is messier, and the thresholds should be tuned on real reports with `AutoCloseBenign` left off.
 
@@ -57,7 +57,7 @@ These numbers are a **sanity check, not a real-world accuracy claim**. The test 
 git clone https://github.com/sbsmith340/sentinel-phishing-triage.git
 cd sentinel-phishing-triage
 pip install pytest
-pytest -q tests                                  # 13 tests
+pytest -q tests                                  # 19 tests
 python sample/generate_samples.py --count 200 --seed 7
 python src/evaluate.py sample/reported_emails.jsonl
 ```
@@ -125,8 +125,11 @@ az role assignment create --assignee-object-id $PID --assignee-principal-type Se
 - The playbook identity can modify incidents. It's scoped to Sentinel Responder on one resource group, not Contributor.
 - The Function logs verdicts and signal names only, never email content.
 
+## Short-link expansion (optional)
+Set the Function app setting `EXPAND_SHORTLINKS=true` to resolve known URL shorteners before scoring (`src/triage/expand.py`). The signals then run on the final destination (raw-IP, lookalike, link-text mismatch, `known_bad_urls`) while `url_shortener` still fires on the original link. It is **off by default** because it makes outbound requests to attacker-supplied URLs, so it is built to resist server-side request forgery: http/https only, no private, loopback or link-local targets (including the cloud metadata address), every redirect hop re-checked, and caps on hops, links and time. It sends HEAD requests and never reads a body. Known limit: DNS rebinding is not fully closed, so also restrict the Function's network egress. Not yet measured on the synthetic set: the generator does not model redirects.
+
 ## Limitations & what's next
-- **Expand shortened URLs and check them against threat intel** (VirusTotal/URLScan) before scoring, and feed the results into `known_bad_urls`. This closes the one miss above.
+- **Threat-intel check on the expanded URL** (VirusTotal/URLScan), fed into `known_bad_urls`. Short-link expansion itself is built (below); the intel lookup is not.
 - Domain parsing now handles common multi-part suffixes (`.co.uk`, `.com.au`, and similar) with a built-in list. For complete coverage, swap in `tldextract` (full Public Suffix List).
 - Pull email body text with the Defender API so the content signals see more than the subject.
 - Add remediation for `malicious`: soft-delete the message across mailboxes with the Defender API, and block the sender.

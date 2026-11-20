@@ -15,11 +15,16 @@ import os
 import azure.functions as func
 
 from triage import email_from_sentinel_entities, score_email
+from triage.expand import expand_links, make_http_resolver
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
 
 DEFAULT_PROTECTED = {d.strip().lower() for d in
                      os.environ.get("PROTECTED_DOMAINS", "contoso.com").split(",") if d.strip()}
+
+# Off by default: expanding short links makes outbound requests to attacker-supplied URLs.
+EXPAND_SHORTLINKS = os.environ.get("EXPAND_SHORTLINKS", "false").lower() == "true"
+_RESOLVER = make_http_resolver() if EXPAND_SHORTLINKS else None
 
 
 @app.route(route="score", methods=["POST"])
@@ -37,6 +42,8 @@ def score(req: func.HttpRequest) -> func.HttpResponse:
         # Not an email incident: tell the playbook to leave it for a human.
         result = {"score": None, "verdict": "no_mail_entity", "signals": []}
     else:
+        if _RESOLVER:
+            email = expand_links(email, _RESOLVER)
         r = score_email(email, protected)
         result = {**r.as_dict(), "sender": email.sender_address, "subject": email.subject}
 

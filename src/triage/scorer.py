@@ -59,6 +59,7 @@ URGENCY_PATTERNS = re.compile(
 class Link:
     url: str
     display_text: str = ""
+    resolved_url: str = ""  # final destination after expanding a shortened link, if known
 
 
 @dataclass
@@ -198,10 +199,10 @@ def score_email(email: Email,
     # --- links ------------------------------------------------------------
     link_signals: set[str] = set()
     for link in email.links:
-        host = _domain(link.url)
+        host = _domain(link.resolved_url or link.url)
         if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host):
             link_signals.add("raw_ip_url")
-        if host in SHORTENERS:
+        if _domain(link.url) in SHORTENERS:
             link_signals.add("url_shortener")
         shown = link.display_text.strip()
         if shown and re.search(r"[a-z0-9-]+\.[a-z]{2,}", shown, re.I):
@@ -209,7 +210,7 @@ def score_email(email: Email,
                 link_signals.add("link_text_mismatch")
         if _is_lookalike(host, protected_domains):
             link_signals.add("lookalike_domain")
-        if known_bad_urls and link.url in known_bad_urls:
+        if known_bad_urls and (link.url in known_bad_urls or link.resolved_url in known_bad_urls):
             link_signals.add("known_bad_url")
     for s in sorted(link_signals):
         if s not in signals:
