@@ -57,7 +57,7 @@ These numbers are a **sanity check, not a real-world accuracy claim**. The test 
 git clone https://github.com/sbsmith340/sentinel-phishing-triage.git
 cd sentinel-phishing-triage
 pip install pytest
-pytest -q tests                                  # 19 tests
+pytest -q tests                                  # 25 tests
 python sample/generate_samples.py --count 200 --seed 7
 python src/evaluate.py sample/reported_emails.jsonl
 ```
