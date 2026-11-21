@@ -93,3 +93,69 @@ def test_expansion_never_lowers_the_score():
     expanded = Email("ar@vendor.example", links=[Link("https://bit.ly/abc", "https://contoso.com",
                                                       resolved_url="http://clean.example.net/ok")])
     assert score_email(expanded, PROTECTED).score >= score_email(base, PROTECTED).score
+
+
+# --- Lab QA hardening (task 9ada4880) ---------------------------------------
+GLOBAL = lambda h: ["93.184.216.34"]  # noqa: E731
+
+
+def test_default_resolver_is_contained_and_never_touches_network():
+    # No pinned transport exists yet, so the default resolver must be identity:
+    # no DNS lookup and no HTTP request.
+    import triage.expand as ex
+
+    def boom(*a, **k):
+        raise AssertionError("network used")
+
+    orig_head, orig_resolve = ex._default_head, ex._default_resolve
+    ex._default_head = ex._default_resolve = boom
+    try:
+        r = make_http_resolver()
+        assert r("https://bit.ly/a") == "https://bit.ly/a"
+    finally:
+        ex._default_head, ex._default_resolve = orig_head, orig_resolve
+
+
+def test_url_validation_rejects_tricky_forms():
+    bad = [
+        "http://user:pw@example.com/",          # userinfo
+        "http://example.com:8080/",             # non-standard port
+        "http://example.com:22/",
+        "http://exa\tmple.com/",                # control chars
+        "http://example.com\\@evil.net/",       # backslash
+        "http://[fe80::1%25eth0]/",             # zone id
+        "http://017700000001/",                 # octal/decimal numeric host
+        "http://0x7f000001/",
+        "http://127.1/",
+        "http://010.0.0.1/",                    # leading-zero IPv4
+        "http://168.63.129.16/",                # Azure WireServer
+        "http://[2002:7f00:1::]/",              # 6to4
+        "http://[2001:0:4136:e378::1]/",        # Teredo
+        "http://[::ffff:127.0.0.1]/",           # v4-mapped loopback
+    ]
+    for u in bad:
+        assert not is_safe_target(u, resolve=GLOBAL), u
+    assert is_safe_target("https://example.com:443/x", resolve=GLOBAL)
+    assert is_safe_target("http://example.com:80/x", resolve=GLOBAL)
+
+
+def test_redirect_status_hardening_and_response_closed():
+    import triage.expand as ex
+    closed = []
+
+    class Resp:
+        status = 200
+        headers = {"Location": "http://evil.example/"}
+        def close(self): closed.append(1)
+
+    class Opener:
+        def open(self, req, timeout=None): return Resp()
+
+    orig = ex.urllib.request.build_opener
+    ex.urllib.request.build_opener = lambda *a, **k: Opener()
+    try:
+        # A 200 with a Location header is not a redirect and must be ignored.
+        assert ex._default_head("https://bit.ly/a") is None
+        assert closed
+    finally:
+        ex.urllib.request.build_opener = orig
